@@ -10,12 +10,14 @@ class ASCIIArtConverterGUI:
         self.root.title("ASCII Art Converter")
         self.root.geometry("1200x800")
         
-        # Configure dark theme colors
+        # Configure dark theme colors - Ajustadas para melhor visibilidade
         self.colors = {
             'bg': '#1e1e1e',
             'fg': '#ffffff',
-            'button': '#2d2d2d',
+            'button': '#3d3d3d',
             'frame': '#252526',
+            'input_bg': '#333333',
+            'input_fg': '#ffffff',
             'highlight': '#007acc'
         }
         
@@ -35,30 +37,51 @@ class ASCIIArtConverterGUI:
         self.create_gui()
         
     def setup_dark_theme(self):
-        """Configure dark theme styles"""
-        self.style.configure('Dark.TFrame', background=self.colors['bg'])
+        """Configure dark theme styles with better visibility"""
+        self.style.configure('Dark.TFrame', 
+            background=self.colors['bg']
+        )
+        
         self.style.configure('Dark.TButton',
             background=self.colors['button'],
             foreground=self.colors['fg'],
             padding=5
         )
+        
+        self.style.map('Dark.TButton',
+            background=[('active', self.colors['highlight'])],
+            foreground=[('active', 'white')]
+        )
+        
         self.style.configure('Dark.TLabelframe',
             background=self.colors['frame'],
             foreground=self.colors['fg'],
             padding=10
         )
+        
         self.style.configure('Dark.TLabelframe.Label',
             background=self.colors['frame'],
             foreground=self.colors['fg']
         )
+        
         self.style.configure('Dark.TLabel',
             background=self.colors['frame'],
             foreground=self.colors['fg']
         )
+        
+        # Configuração específica para os Spinboxes
         self.style.configure('Dark.TSpinbox',
-            background=self.colors['button'],
-            foreground=self.colors['fg'],
-            fieldbackground=self.colors['button']
+            background=self.colors['input_bg'],
+            foreground=self.colors['input_fg'],
+            fieldbackground=self.colors['input_bg'],
+            selectbackground=self.colors['highlight'],
+            selectforeground='white'
+        )
+        
+        # Configuração para o Checkbutton
+        self.style.configure('Dark.TCheckbutton',
+            background=self.colors['frame'],
+            foreground=self.colors['fg']
         )
         
     def setup_variables(self):
@@ -121,11 +144,12 @@ class ASCIIArtConverterGUI:
         ]
         
         for row, (text, var, min_val, max_val, increment) in enumerate(settings):
-            ttk.Label(
+            label = ttk.Label(
                 settings_frame,
                 text=text,
                 style='Dark.TLabel'
-            ).grid(row=row, column=0, padx=5, pady=5)
+            )
+            label.grid(row=row, column=0, padx=5, pady=5, sticky='w')
             
             spinbox = ttk.Spinbox(
                 settings_frame,
@@ -137,14 +161,21 @@ class ASCIIArtConverterGUI:
                 style='Dark.TSpinbox'
             )
             spinbox.grid(row=row, column=1, padx=5, pady=5)
+            
+            # Configurar cores diretamente no widget Spinbox
+            spinbox.configure(
+                background=self.colors['input_bg'],
+                foreground=self.colors['input_fg']
+            )
         
         # Invert colors checkbox
-        ttk.Checkbutton(
+        check = ttk.Checkbutton(
             settings_frame,
             text="Invert Colors",
             variable=self.invert_var,
             style='Dark.TCheckbutton'
-        ).grid(row=len(settings), column=0, columnspan=2, pady=5)
+        )
+        check.grid(row=len(settings), column=0, columnspan=2, pady=5)
         
         # Preview
         preview_frame = ttk.LabelFrame(
@@ -169,9 +200,9 @@ class ASCIIArtConverterGUI:
             right_frame,
             wrap=tk.NONE,
             font=('Courier', 10),
-            bg=self.colors['bg'],
-            fg=self.colors['fg'],
-            insertbackground=self.colors['fg']
+            bg=self.colors['input_bg'],
+            fg=self.colors['input_fg'],
+            insertbackground=self.colors['input_fg']
         )
         self.output_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
