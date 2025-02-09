@@ -10,135 +10,168 @@ class ASCIIArtConverterGUI:
         self.root.title("ASCII Art Converter")
         self.root.geometry("1200x800")
         
-        # ASCII characters from darkest to lightest
-        self.ASCII_CHARS = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", "."]
+        # Configure dark theme colors
+        self.colors = {
+            'bg': '#1e1e1e',
+            'fg': '#ffffff',
+            'button': '#2d2d2d',
+            'frame': '#252526',
+            'highlight': '#007acc'
+        }
+        
+        # ASCII characters from darkest to lightest (reversed for dark theme)
+        self.ASCII_CHARS = [".", ",", ":", ";", "+", "*", "?", "%", "S", "#", "@"]
         
         # Initialize variables
         self.image_path = None
         self.original_image = None
         self.preview_photo = None
         
+        # Apply dark theme
+        self.root.configure(bg=self.colors['bg'])
+        self.style = ttk.Style()
+        self.setup_dark_theme()
         self.setup_variables()
         self.create_gui()
-        self.setup_styles()
+        
+    def setup_dark_theme(self):
+        """Configure dark theme styles"""
+        self.style.configure('Dark.TFrame', background=self.colors['bg'])
+        self.style.configure('Dark.TButton',
+            background=self.colors['button'],
+            foreground=self.colors['fg'],
+            padding=5
+        )
+        self.style.configure('Dark.TLabelframe',
+            background=self.colors['frame'],
+            foreground=self.colors['fg'],
+            padding=10
+        )
+        self.style.configure('Dark.TLabelframe.Label',
+            background=self.colors['frame'],
+            foreground=self.colors['fg']
+        )
+        self.style.configure('Dark.TLabel',
+            background=self.colors['frame'],
+            foreground=self.colors['fg']
+        )
+        self.style.configure('Dark.TSpinbox',
+            background=self.colors['button'],
+            foreground=self.colors['fg'],
+            fieldbackground=self.colors['button']
+        )
         
     def setup_variables(self):
         """Initialize tkinter variables"""
         self.width_var = tk.IntVar(value=100)
         self.brightness_var = tk.DoubleVar(value=1.0)
         self.contrast_var = tk.DoubleVar(value=1.0)
-        
-    def setup_styles(self):
-        """Configure ttk styles"""
-        style = ttk.Style()
-        style.configure('Primary.TButton', padding=5)
-        style.configure('Settings.TLabelframe', padding=10)
+        self.invert_var = tk.BooleanVar(value=False)
         
     def create_gui(self):
         """Create the main GUI layout"""
+        main_frame = ttk.Frame(self.root, style='Dark.TFrame')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
         # Create main containers
-        self.create_top_frame()
-        self.create_content_frame()
+        self.create_top_frame(main_frame)
+        self.create_content_frame(main_frame)
         
-    def create_top_frame(self):
+    def create_top_frame(self, parent):
         """Create the top frame with main controls"""
-        top_frame = ttk.Frame(self.root, padding="10")
-        top_frame.pack(fill=tk.X, padx=10, pady=5)
+        top_frame = ttk.Frame(parent, style='Dark.TFrame')
+        top_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Select Image Button
-        select_btn = ttk.Button(
-            top_frame, 
-            text="Select Image", 
-            command=self.select_image,
-            style='Primary.TButton'
-        )
-        select_btn.pack(side=tk.LEFT, padx=5)
+        buttons = [
+            ("Select Image", self.select_image),
+            ("Convert to ASCII", self.convert_image),
+            ("Save ASCII Art", self.save_ascii)
+        ]
         
-        # Convert Button
-        convert_btn = ttk.Button(
-            top_frame, 
-            text="Convert to ASCII", 
-            command=self.convert_image,
-            style='Primary.TButton'
-        )
-        convert_btn.pack(side=tk.LEFT, padx=5)
+        for text, command in buttons:
+            btn = ttk.Button(
+                top_frame,
+                text=text,
+                command=command,
+                style='Dark.TButton'
+            )
+            btn.pack(side=tk.LEFT, padx=5)
         
-        # Save Button
-        save_btn = ttk.Button(
-            top_frame, 
-            text="Save ASCII Art", 
-            command=self.save_ascii,
-            style='Primary.TButton'
-        )
-        save_btn.pack(side=tk.LEFT, padx=5)
-        
-    def create_content_frame(self):
+    def create_content_frame(self, parent):
         """Create the main content area"""
-        content_frame = ttk.Frame(self.root, padding="10")
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        content_frame = ttk.Frame(parent, style='Dark.TFrame')
+        content_frame.pack(fill=tk.BOTH, expand=True)
         
         # Left side - Settings and Preview
-        left_frame = ttk.Frame(content_frame)
+        left_frame = ttk.Frame(content_frame, style='Dark.TFrame')
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Settings
         settings_frame = ttk.LabelFrame(
-            left_frame, 
-            text="Settings", 
-            style='Settings.TLabelframe'
+            left_frame,
+            text="Settings",
+            style='Dark.TLabelframe'
         )
         settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # Width setting
-        ttk.Label(settings_frame, text="Width (characters):").grid(row=0, column=0, padx=5, pady=5)
-        width_spin = ttk.Spinbox(
-            settings_frame, 
-            from_=20, 
-            to=200, 
-            textvariable=self.width_var,
-            width=10
-        )
-        width_spin.grid(row=0, column=1, padx=5, pady=5)
+        settings = [
+            ("Width (characters):", self.width_var, 20, 200, 1),
+            ("Brightness:", self.brightness_var, 0.1, 2.0, 0.1),
+            ("Contrast:", self.contrast_var, 0.1, 2.0, 0.1)
+        ]
         
-        # Brightness setting
-        ttk.Label(settings_frame, text="Brightness:").grid(row=1, column=0, padx=5, pady=5)
-        brightness_spin = ttk.Spinbox(
-            settings_frame, 
-            from_=0.1, 
-            to=2.0, 
-            increment=0.1,
-            textvariable=self.brightness_var,
-            width=10
-        )
-        brightness_spin.grid(row=1, column=1, padx=5, pady=5)
+        for row, (text, var, min_val, max_val, increment) in enumerate(settings):
+            ttk.Label(
+                settings_frame,
+                text=text,
+                style='Dark.TLabel'
+            ).grid(row=row, column=0, padx=5, pady=5)
+            
+            spinbox = ttk.Spinbox(
+                settings_frame,
+                from_=min_val,
+                to=max_val,
+                increment=increment,
+                textvariable=var,
+                width=10,
+                style='Dark.TSpinbox'
+            )
+            spinbox.grid(row=row, column=1, padx=5, pady=5)
         
-        # Contrast setting
-        ttk.Label(settings_frame, text="Contrast:").grid(row=2, column=0, padx=5, pady=5)
-        contrast_spin = ttk.Spinbox(
-            settings_frame, 
-            from_=0.1, 
-            to=2.0, 
-            increment=0.1,
-            textvariable=self.contrast_var,
-            width=10
-        )
-        contrast_spin.grid(row=2, column=1, padx=5, pady=5)
+        # Invert colors checkbox
+        ttk.Checkbutton(
+            settings_frame,
+            text="Invert Colors",
+            variable=self.invert_var,
+            style='Dark.TCheckbutton'
+        ).grid(row=len(settings), column=0, columnspan=2, pady=5)
         
         # Preview
-        preview_frame = ttk.LabelFrame(left_frame, text="Image Preview")
+        preview_frame = ttk.LabelFrame(
+            left_frame,
+            text="Image Preview",
+            style='Dark.TLabelframe'
+        )
         preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.preview_label = ttk.Label(preview_frame)
+        self.preview_label = ttk.Label(preview_frame, style='Dark.TLabel')
         self.preview_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Right side - ASCII Output
-        right_frame = ttk.LabelFrame(content_frame, text="ASCII Output")
+        right_frame = ttk.LabelFrame(
+            content_frame,
+            text="ASCII Output",
+            style='Dark.TLabelframe'
+        )
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
         self.output_text = scrolledtext.ScrolledText(
-            right_frame, 
+            right_frame,
             wrap=tk.NONE,
-            font=('Courier', 10)
+            font=('Courier', 10),
+            bg=self.colors['bg'],
+            fg=self.colors['fg'],
+            insertbackground=self.colors['fg']
         )
         self.output_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -191,8 +224,10 @@ class ASCIIArtConverterGUI:
             
             # Convert to ASCII
             pixels = np.array(image)
+            if self.invert_var.get():
+                pixels = 255 - pixels
+                
             ascii_art = []
-            
             for row in pixels:
                 ascii_row = ''.join(self._pixel_to_ascii(pixel) for pixel in row)
                 ascii_art.append(ascii_row)
