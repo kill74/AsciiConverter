@@ -1,952 +1,848 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox, font as tkfont
+from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageEnhance, ImageDraw, ImageFont, ImageFilter
 import numpy as np
-import os
 import threading
-import colorsys
+import os
+import json
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CHARACTER SETS
-# ─────────────────────────────────────────────────────────────────────────────
-ASCII_CHAR_SETS = {
-    "Standard":     list(' .\'`^",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$'),
-    "Dense":        list('@#S%?*+;:,. '),
-    "Sparse":       list(' .-:=+*#%@'),
-    "Blocks":       list(' ░▒▓█'),
-    "Blocks+":      list(' ·∙●▪▫▬▮▯▲▴▸▾◆◇○◉★☆⬛⬜'),
-    "Braille":      list(' ⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿'),
-    "Minimal":      list(' :. #'),
-    "Mathematical": list(' ·÷×±∓∔∕∖∗∘∙√∛∜∝∞∟∠∡∢∣'),
-    "Custom":       [],
+CHARS = {
+    "Standard": list(' .\'`^",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$'),
+    "Dense":    list('@#S%?*+;:,. '),
+    "Sparse":   list(' .-:=+*#%@'),
+    "Blocks":   list(' ░▒▓█'),
+    "Braille":  list(' ⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿'),
+    "Minimal":  list(' :. #'),
 }
 
-# Half-block: ▀ (upper half) — foreground = top pixel, bg = bottom pixel
-HALF_BLOCK_CHAR = "▀"
+HALF_BLOCK = "▀"
 
-EDGE_CHARS = {
-    "off":  None,
-    "soft": ImageFilter.SMOOTH,
-    "hard": ImageFilter.SHARPEN,
-    "find": ImageFilter.FIND_EDGES,
-}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  THEME
-# ─────────────────────────────────────────────────────────────────────────────
-THEME = {
-    'bg':           '#0d0d0d',
-    'panel':        '#141414',
-    'card':         '#1a1a1a',
-    'border':       '#2a2a2a',
-    'fg':           '#e8e8e8',
-    'fg_dim':       '#666666',
-    'accent':       '#00ff88',
-    'accent2':      '#00ccff',
-    'danger':       '#ff4466',
-    'btn':          '#1e1e1e',
-    'btn_hover':    '#2a2a2a',
-    'input_bg':     '#111111',
-    'scrollbar':    '#222222',
-    'tag_prefix':   'col_',
-}
+BG   = '#0d0d0d'
+PANEL= '#141414'
+CARD = '#1a1a1a'
+BORDER='#2a2a2a'
+FG   = '#e8e8e8'
+DIM  = '#666666'
+GREEN= '#00ff88'
+CYAN = '#00ccff'
+BTN  = '#1e1e1e'
+INBG = '#111111'
 
 
-def hex_to_rgb(hex_color: str):
-    h = hex_color.lstrip('#')
-    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-
-
-def rgb_to_hex(r, g, b):
+def to_hex(r, g, b):
     return f'#{int(r):02x}{int(g):02x}{int(b):02x}'
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CONVERSION ENGINE
-# ─────────────────────────────────────────────────────────────────────────────
-class ConversionEngine:
+def extract_gif_frames(gif):
+    frames = []
+    bg = Image.new('RGBA', gif.size, (0, 0, 0, 255))
+    i = 0
+    while True:
+        try:
+            gif.seek(i)
+        except EOFError:
+            break
+        frame = gif.copy().convert('RGBA')
+        dur = gif.info.get('duration', 100) or 100
+        comp = bg.copy()
+        comp.paste(frame, (0, 0), frame)
+        frames.append((comp.convert('RGB'), dur))
+        disposal = getattr(gif, 'disposal_method', 0)
+        bg = Image.new('RGBA', gif.size, (0, 0, 0, 255)) if disposal == 2 else comp
+        i += 1
+    return frames
 
-    @staticmethod
-    def pixel_to_ascii(pixel_value: int, chars: list) -> str:
-        idx = int(pixel_value / 255 * (len(chars) - 1))
-        return chars[max(0, min(idx, len(chars) - 1))]
 
-    @staticmethod
-    def apply_dithering(pixels: np.ndarray) -> np.ndarray:
-        """Floyd-Steinberg dithering for better grayscale accuracy."""
-        arr = pixels.astype(float)
-        h, w = arr.shape
-        for y in range(h):
-            for x in range(w):
-                old = arr[y, x]
-                new = round(old / 255) * 255
-                arr[y, x] = new
-                err = old - new
-                if x + 1 < w:            arr[y, x+1]   += err * 7/16
-                if y + 1 < h:
-                    if x - 1 >= 0:        arr[y+1, x-1] += err * 3/16
-                    arr[y+1, x]           += err * 5/16
-                    if x + 1 < w:         arr[y+1, x+1] += err * 1/16
-        return np.clip(arr, 0, 255).astype(np.uint8)
+def px_to_char(val, chars):
+    idx = int(val / 255 * (len(chars) - 1))
+    return chars[max(0, min(idx, len(chars) - 1))]
 
-    @staticmethod
-    def convert_grayscale(image: Image.Image, width: int, chars: list,
-                          brightness: float, contrast: float, invert: bool,
-                          dither: bool, edge_mode: str,
-                          progress_cb=None) -> list:
-        """Returns list of strings (rows of ASCII chars)."""
-        aspect = image.size[1] / image.size[0]
-        height = max(1, int(width * aspect * 0.55))
-        img = image.resize((width, height), Image.Resampling.LANCZOS)
 
-        if edge_mode != "off" and EDGE_CHARS[edge_mode]:
-            img = img.filter(EDGE_CHARS[edge_mode])
+def floyd_steinberg(px):
+    arr = px.astype(float)
+    h, w = arr.shape
+    for y in range(h):
+        for x in range(w):
+            old = arr[y, x]
+            new = round(old / 255) * 255
+            arr[y, x] = new
+            err = old - new
+            if x+1 < w:           arr[y, x+1]   += err * 7/16
+            if y+1 < h:
+                if x-1 >= 0:      arr[y+1, x-1] += err * 3/16
+                arr[y+1, x]       += err * 5/16
+                if x+1 < w:       arr[y+1, x+1] += err * 1/16
+    return np.clip(arr, 0, 255).astype(np.uint8)
 
+
+def convert_frame(img, mode, width, chars, brightness, contrast, saturation, invert, dither, edge, prog_cb=None):
+    img = img.copy()
+
+    if saturation != 1.0:
+        img = ImageEnhance.Color(img.convert('RGB')).enhance(saturation)
+
+    aspect = img.size[1] / img.size[0]
+
+    if mode == 'halfblock':
+        raw_h = max(2, int(width * aspect))
+        if raw_h % 2: raw_h += 1
+        img = img.resize((width, raw_h), Image.Resampling.LANCZOS).convert('RGB')
+        img = ImageEnhance.Brightness(img).enhance(brightness)
+        img = ImageEnhance.Contrast(img).enhance(contrast)
+        px = np.array(img)
+        if invert: px = 255 - px
+        rows = []
+        total = raw_h // 2
+        for i in range(0, raw_h - 1, 2):
+            row = [(HALF_BLOCK, to_hex(*px[i][j]), to_hex(*px[i+1][j])) for j in range(width)]
+            rows.append(row)
+            if prog_cb: prog_cb(int((i//2+1)/total*100))
+        return rows
+
+    h = max(1, int(width * aspect * 0.55))
+    img = img.resize((width, h), Image.Resampling.LANCZOS)
+
+    edge_filters = {'soft': ImageFilter.SMOOTH, 'hard': ImageFilter.SHARPEN, 'find': ImageFilter.FIND_EDGES}
+    if edge in edge_filters:
+        img = img.filter(edge_filters[edge])
+
+    img = ImageEnhance.Brightness(img).enhance(brightness)
+    img = ImageEnhance.Contrast(img).enhance(contrast)
+
+    if mode == 'grayscale':
         img = img.convert('L')
-        img = ImageEnhance.Brightness(img).enhance(brightness)
-        img = ImageEnhance.Contrast(img).enhance(contrast)
-
-        pixels = np.array(img)
-        if invert:
-            pixels = 255 - pixels
-        if dither:
-            pixels = ConversionEngine.apply_dithering(pixels)
-
+        px = np.array(img)
+        if invert: px = 255 - px
+        if dither: px = floyd_steinberg(px)
         rows = []
-        total = pixels.shape[0]
-        for i, row in enumerate(pixels):
-            rows.append(''.join(ConversionEngine.pixel_to_ascii(p, chars) for p in row))
-            if progress_cb and (i % 5 == 0 or i == total - 1):
-                progress_cb(int((i + 1) / total * 100))
+        for i, row in enumerate(px):
+            rows.append(''.join(px_to_char(p, chars) for p in row))
+            if prog_cb and (i % 5 == 0 or i == len(px)-1):
+                prog_cb(int((i+1)/len(px)*100))
         return rows
 
-    @staticmethod
-    def convert_color(image: Image.Image, width: int, chars: list,
-                      brightness: float, contrast: float, invert: bool,
-                      dither: bool, edge_mode: str,
-                      progress_cb=None) -> list:
-        """
-        Returns list of rows; each row is a list of (char, '#rrggbb') tuples.
-        """
-        aspect = image.size[1] / image.size[0]
-        height = max(1, int(width * aspect * 0.55))
-        img_color = image.resize((width, height), Image.Resampling.LANCZOS).convert('RGB')
+    # color mode
+    img = img.convert('RGB')
+    gray = img.convert('L')
+    gray = ImageEnhance.Contrast(gray).enhance(1.0)  # already done above but gray needs separate pass
+    cpx = np.array(img)
+    gpx = np.array(gray)
+    if invert:
+        cpx = 255 - cpx
+        gpx = 255 - gpx
+    rows = []
+    for i, (grow, crow) in enumerate(zip(gpx, cpx)):
+        rows.append([(px_to_char(g, chars), to_hex(*c)) for g, c in zip(grow, crow)])
+        if prog_cb and (i % 5 == 0 or i == len(gpx)-1):
+            prog_cb(int((i+1)/len(gpx)*100))
+    return rows
 
-        if edge_mode != "off" and EDGE_CHARS[edge_mode]:
-            img_color = img_color.filter(EDGE_CHARS[edge_mode])
 
-        img_gray = img_color.convert('L')
-        img_gray = ImageEnhance.Brightness(img_gray).enhance(brightness)
-        img_gray = ImageEnhance.Contrast(img_gray).enhance(contrast)
-        img_color = ImageEnhance.Brightness(img_color).enhance(brightness)
-        img_color = ImageEnhance.Contrast(img_color).enhance(contrast)
+def frame_to_html(rows, mode):
+    lines = []
+    def esc(c): return c.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    if mode == 'grayscale':
+        for row in rows: lines.append(esc(row))
+    elif mode == 'color':
+        for row in rows:
+            lines.append(''.join(f'<span style="color:{col}">{esc(ch)}</span>' for ch, col in row))
+    elif mode == 'halfblock':
+        for row in rows:
+            lines.append(''.join(f'<span style="color:{fg};background:{bg}">{HALF_BLOCK}</span>' for _, fg, bg in row))
+    return '\n'.join(lines)
 
-        gray_px = np.array(img_gray)
-        color_px = np.array(img_color)
 
-        if invert:
-            gray_px = 255 - gray_px
-            color_px = 255 - color_px
+def make_static_html(rows, mode, fontsize=10, bg='#000000'):
+    body = frame_to_html(rows, mode)
+    return f'''<!DOCTYPE html><html><head><meta charset="utf-8"><title>ASCII Art</title>
+<style>body{{background:{bg};margin:0;padding:16px}}
+pre{{font-family:"Courier New",monospace;font-size:{fontsize}px;line-height:1.2;margin:0}}
+span{{display:inline}}</style></head><body><pre>{body}</pre></body></html>'''
 
-        rows = []
-        total = gray_px.shape[0]
-        for i, (gray_row, color_row) in enumerate(zip(gray_px, color_px)):
-            row = []
-            for g, c in zip(gray_row, color_row):
-                char = ConversionEngine.pixel_to_ascii(g, chars)
-                row.append((char, rgb_to_hex(c[0], c[1], c[2])))
-            rows.append(row)
-            if progress_cb and (i % 5 == 0 or i == total - 1):
-                progress_cb(int((i + 1) / total * 100))
-        return rows
 
-    @staticmethod
-    def convert_halfblock(image: Image.Image, width: int,
-                          brightness: float, contrast: float, invert: bool,
-                          progress_cb=None) -> list:
-        """
-        Half-block HD mode: each character = 2 vertical pixels.
-        Returns list of rows; each row is list of (char, fg_hex, bg_hex).
-        char is always HALF_BLOCK_CHAR (▀).
-        fg = top pixel color, bg = bottom pixel color.
-        Effectively DOUBLES the vertical resolution.
-        """
-        aspect = image.size[1] / image.size[0]
-        # For half-block, use 0.5 factor since each char covers 2 rows
-        raw_height = max(2, int(width * aspect))
-        # Make even
-        if raw_height % 2 != 0:
-            raw_height += 1
-
-        img = image.resize((width, raw_height), Image.Resampling.LANCZOS).convert('RGB')
-        img = ImageEnhance.Brightness(img).enhance(brightness)
-        img = ImageEnhance.Contrast(img).enhance(contrast)
-
-        pixels = np.array(img)
-        if invert:
-            pixels = 255 - pixels
-
-        rows = []
-        total = raw_height // 2
-        for i in range(0, raw_height - 1, 2):
-            top_row    = pixels[i]
-            bottom_row = pixels[i + 1]
-            row = []
-            for top, bot in zip(top_row, bottom_row):
-                fg = rgb_to_hex(top[0], top[1], top[2])
-                bg = rgb_to_hex(bot[0], bot[1], bot[2])
-                row.append((HALF_BLOCK_CHAR, fg, bg))
-            rows.append(row)
-            if progress_cb:
-                progress_cb(int((i // 2 + 1) / total * 100))
-        return rows
-
-    @staticmethod
-    def rows_to_html(rows, mode: str, font_size: int = 10, bg: str = '#000000') -> str:
-        """Export colored/half-block result as an HTML file."""
-        lines = []
-        lines.append(f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>ASCII Art — Pro Export</title>
+def make_animated_html(all_rows, durations, mode, fontsize=10, bg='#000000'):
+    fdata = json.dumps([frame_to_html(r, mode) for r in all_rows])
+    ddata = json.dumps(durations)
+    return f'''<!DOCTYPE html><html><head><meta charset="utf-8"><title>ASCII GIF</title>
 <style>
-  body {{ background:{bg}; margin:0; padding:16px; }}
-  pre {{
-    font-family: 'Courier New', monospace;
-    font-size: {font_size}px;
-    line-height: 1.2;
-    letter-spacing: 0;
-    margin: 0;
-  }}
-  span {{ display: inline; }}
-</style>
-</head>
-<body><pre>""")
+body{{background:{bg};margin:0;padding:16px;user-select:none}}
+pre{{font-family:"Courier New",monospace;font-size:{fontsize}px;line-height:1.2;margin:0;white-space:pre}}
+span{{display:inline}}
+#bar{{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
+      background:rgba(0,0,0,.8);border-radius:8px;padding:6px 14px;
+      display:flex;gap:10px;align-items:center;color:#00ff88;font-family:monospace;font-size:13px}}
+button{{background:#1e1e1e;color:#00ff88;border:1px solid #333;border-radius:4px;
+        padding:2px 9px;cursor:pointer;font-size:13px}}
+button:hover{{background:#2a2a2a}}
+input[type=range]{{accent-color:#00ff88}}
+</style></head><body>
+<pre id="out"></pre>
+<div id="bar">
+  <button id="btn">⏸</button>
+  frame <input type="range" id="scrub" min="0" value="0" style="width:150px">
+  <span id="info">1/1</span>
+  speed <input type="range" id="spd" min="10" max="400" value="100" style="width:80px">
+  <span id="sl">100%</span>
+</div>
+<script>
+const frames={fdata}, dur={ddata};
+const out=document.getElementById('out'), btn=document.getElementById('btn'),
+      scrub=document.getElementById('scrub'), info=document.getElementById('info'),
+      spd=document.getElementById('spd'), sl=document.getElementById('sl');
+scrub.max=frames.length-1;
+let idx=0, playing=true, t=null;
+const show=i=>{{ out.innerHTML=frames[i]; scrub.value=i; info.textContent=(i+1)+'/'+frames.length; }};
+const next=()=>{{ idx=(idx+1)%frames.length; show(idx); t=setTimeout(next, Math.max(16, dur[idx]*(100/+spd.value))); }};
+btn.onclick=()=>{{ playing=!playing; btn.textContent=playing?'⏸':'▶'; playing?next():clearTimeout(t); }};
+scrub.oninput=()=>{{ clearTimeout(t); idx=+scrub.value; show(idx); if(playing) next(); }};
+spd.oninput=()=>sl.textContent=spd.value+'%';
+show(0); next();
+</script></body></html>'''
 
-        if mode == 'grayscale':
-            for row in rows:
-                lines.append(row.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
-        elif mode == 'color':
-            for row in rows:
-                row_html = ''
-                for char, col in row:
-                    safe = char.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    row_html += f'<span style="color:{col}">{safe}</span>'
-                lines.append(row_html)
-        elif mode == 'halfblock':
-            for row in rows:
-                row_html = ''
-                for char, fg, bg_c in row:
-                    row_html += (f'<span style="color:{fg};background:{bg_c}">'
-                                 f'{char}</span>')
-                lines.append(row_html)
 
-        lines.append('</pre></body></html>')
-        return '\n'.join(lines)
+def rows_to_image(rows, mode, fnt, cw, ch):
+    ncols = max((len(r) for r in rows), default=1)
+    img = Image.new('RGB', (ncols * cw, len(rows) * ch), 'black')
+    draw = ImageDraw.Draw(img)
+    if mode == 'grayscale':
+        for ri, row in enumerate(rows):
+            draw.text((0, ri*ch), row, font=fnt, fill='white')
+    elif mode == 'color':
+        for ri, row in enumerate(rows):
+            x = 0
+            for ch_, col in row:
+                draw.text((x, ri*ch), ch_, font=fnt, fill=col); x += cw
+    elif mode == 'halfblock':
+        for ri, row in enumerate(rows):
+            x = 0
+            for _, fg, bg in row:
+                draw.rectangle([x, ri*ch, x+cw-1, ri*ch+ch-1], fill=bg)
+                draw.text((x, ri*ch), HALF_BLOCK, font=fnt, fill=fg); x += cw
+    return img
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN GUI
-# ─────────────────────────────────────────────────────────────────────────────
-class ASCIIArtConverterPro:
-
-    def __init__(self, root: tk.Tk):
+class App:
+    def __init__(self, root):
         self.root = root
-        self.root.title("ASCII Art Converter PRO")
-        self.root.geometry("1440x900")
-        self.root.minsize(1100, 700)
-        self.root.configure(bg=THEME['bg'])
+        root.title("ASCII Art Converter")
+        root.geometry("1400x880")
+        root.minsize(1000, 650)
+        root.configure(bg=BG)
 
-        # ── State ────────────────────────────────────────────────────────────
-        self.image_path      = None
-        self.original_image  = None
-        self.preview_photo   = None
-        self._last_result    = None   # (mode, rows)
-        self._converting     = False
-        self._registered_tags = set()
+        # image state
+        self.img = None           # current PIL image (first frame for GIFs)
+        self.img_path = None
+        self.result = None        # (mode, rows) for static images
 
-        # ── Tkinter Vars ─────────────────────────────────────────────────────
-        self.width_var       = tk.IntVar(value=120)
-        self.brightness_var  = tk.DoubleVar(value=1.0)
-        self.contrast_var    = tk.DoubleVar(value=1.1)
-        self.saturation_var  = tk.DoubleVar(value=1.2)
-        self.invert_var      = tk.BooleanVar(value=False)
-        self.dither_var      = tk.BooleanVar(value=False)
-        self.live_var        = tk.BooleanVar(value=False)
-        self.charset_var     = tk.StringVar(value="Standard")
-        self.mode_var        = tk.StringVar(value="color")
-        self.edge_var        = tk.StringVar(value="off")
-        self.font_size_var   = tk.IntVar(value=9)
-        self.custom_chars_var = tk.StringVar(value="")
-        self.bg_color_var    = tk.StringVar(value="#000000")
-        self.progress_var    = tk.IntVar(value=0)
-        self.status_var      = tk.StringVar(value="Ready — load an image to begin")
+        # gif state
+        self.is_gif = False
+        self.gif_frames = []      # list of (PIL img, duration ms)
+        self.gif_converted = []   # list of rows per frame
+        self.gif_durations = []
+        self.gif_mode = 'color'
+        self.playing = False
+        self.anim_idx = 0
+        self.anim_job = None
+        self.gif_thumb_photos = []
+        self.gif_thumb_job = None
+        self.gif_thumb_idx = 0
 
-        # ── Build UI ─────────────────────────────────────────────────────────
-        self._apply_ttk_styles()
-        self._build_ui()
-        self._bind_shortcuts()
+        self.converting = False
+        self.tags = set()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  STYLES
-    # ─────────────────────────────────────────────────────────────────────────
-    def _apply_ttk_styles(self):
+        # vars
+        self.v_width      = tk.IntVar(value=120)
+        self.v_bright     = tk.DoubleVar(value=1.0)
+        self.v_contrast   = tk.DoubleVar(value=1.1)
+        self.v_sat        = tk.DoubleVar(value=1.2)
+        self.v_invert     = tk.BooleanVar(value=False)
+        self.v_dither     = tk.BooleanVar(value=False)
+        self.v_live       = tk.BooleanVar(value=False)
+        self.v_loop       = tk.BooleanVar(value=True)
+        self.v_charset    = tk.StringVar(value="Standard")
+        self.v_mode       = tk.StringVar(value="color")
+        self.v_edge       = tk.StringVar(value="off")
+        self.v_fontsize   = tk.IntVar(value=9)
+        self.v_custom     = tk.StringVar(value="")
+        self.v_progress   = tk.IntVar(value=0)
+        self.v_status     = tk.StringVar(value="Load an image or GIF to get started")
+        self.v_speed      = tk.IntVar(value=100)
+        self.v_frame      = tk.IntVar(value=0)
+
+        self._style()
+        self._ui()
+        self._shortcuts()
+
+    def _style(self):
         s = ttk.Style()
         s.theme_use('default')
-        s.configure('TFrame',       background=THEME['bg'])
-        s.configure('Card.TFrame',  background=THEME['card'])
-        s.configure('TLabel',       background=THEME['card'],  foreground=THEME['fg'],
-                    font=('Consolas', 9))
-        s.configure('Head.TLabel',  background=THEME['bg'],    foreground=THEME['accent'],
-                    font=('Consolas', 10, 'bold'))
-        s.configure('Dim.TLabel',   background=THEME['card'],  foreground=THEME['fg_dim'],
-                    font=('Consolas', 8))
+        s.configure('TFrame', background=BG)
+        s.configure('TLabel', background=CARD, foreground=FG, font=('Consolas', 9))
+        s.configure('TCheckbutton', background=CARD, foreground=FG, font=('Consolas', 9))
+        s.map('TCheckbutton', background=[('active', CARD)], foreground=[('active', GREEN)])
+        s.configure('TCombobox', fieldbackground=INBG, background=INBG,
+                    foreground=FG, selectbackground=GREEN, font=('Consolas', 9))
+        s.configure('Go.TButton', background=GREEN, foreground='#000',
+                    font=('Consolas', 9, 'bold'), padding=(10, 6))
+        s.map('Go.TButton', background=[('active', CYAN), ('disabled', BTN)])
+        s.configure('TButton', background=BTN, foreground=FG, font=('Consolas', 9), padding=(8, 5))
+        s.map('TButton', background=[('active', '#2a2a2a'), ('disabled', BORDER)])
+        s.configure('TProgressbar', troughcolor=BORDER, background=GREEN, thickness=4)
+        s.configure('TRadiobutton', background=CARD, foreground=FG, font=('Consolas', 9))
+        s.map('TRadiobutton', background=[('active', CARD)], foreground=[('active', GREEN)])
+        s.configure('TSpinbox', background=INBG, fieldbackground=INBG,
+                    foreground=FG, font=('Consolas', 9))
 
-        s.configure('TCheckbutton', background=THEME['card'],  foreground=THEME['fg'],
-                    font=('Consolas', 9))
-        s.map('TCheckbutton',
-              background=[('active', THEME['card'])],
-              foreground=[('active', THEME['accent'])])
-
-        s.configure('TCombobox',    fieldbackground=THEME['input_bg'],
-                    background=THEME['input_bg'], foreground=THEME['fg'],
-                    selectbackground=THEME['accent'], font=('Consolas', 9))
-
-        s.configure('Accent.TButton', background=THEME['accent'],
-                    foreground='#000000', font=('Consolas', 9, 'bold'), padding=(10, 6))
-        s.map('Accent.TButton',
-              background=[('active', THEME['accent2']), ('disabled', THEME['btn'])])
-
-        s.configure('TButton', background=THEME['btn'],
-                    foreground=THEME['fg'], font=('Consolas', 9), padding=(8, 5))
-        s.map('TButton',
-              background=[('active', THEME['btn_hover']), ('disabled', THEME['border'])])
-
-        s.configure('TProgressbar', troughcolor=THEME['border'],
-                    background=THEME['accent'], thickness=4)
-
-        s.configure('TScale',       background=THEME['card'],
-                    troughcolor=THEME['border'], sliderlength=12)
-        s.map('TScale', background=[('active', THEME['accent'])])
-
-        s.configure('TSpinbox',     background=THEME['input_bg'],
-                    fieldbackground=THEME['input_bg'],
-                    foreground=THEME['fg'], font=('Consolas', 9))
-
-        s.configure('TLabelframe',  background=THEME['card'],
-                    foreground=THEME['fg_dim'], font=('Consolas', 8))
-        s.configure('TLabelframe.Label', background=THEME['card'],
-                    foreground=THEME['accent2'], font=('Consolas', 9, 'bold'))
-
-        s.configure('TRadiobutton', background=THEME['card'], foreground=THEME['fg'],
-                    font=('Consolas', 9))
-        s.map('TRadiobutton',
-              background=[('active', THEME['card'])],
-              foreground=[('active', THEME['accent'])])
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  UI CONSTRUCTION
-    # ─────────────────────────────────────────────────────────────────────────
-    def _build_ui(self):
-        # Header bar
-        self._build_header()
-
-        # Main area (sidebar + output)
-        body = ttk.Frame(self.root, style='TFrame')
+    def _ui(self):
+        self._header()
+        body = tk.Frame(self.root, bg=BG)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
+        self._sidebar(body)
+        self._output(body)
+        self._statusbar()
 
-        self._build_sidebar(body)
-        self._build_output_panel(body)
-
-        # Status bar
-        self._build_status_bar()
-
-    def _build_header(self):
-        hdr = tk.Frame(self.root, bg=THEME['panel'], height=52)
-        hdr.pack(fill=tk.X)
-        hdr.pack_propagate(False)
-
-        # Logo
-        tk.Label(hdr, text="▓▒░ ASCII ART CONVERTER PRO ░▒▓",
-                 bg=THEME['panel'], fg=THEME['accent'],
-                 font=('Consolas', 13, 'bold')).pack(side=tk.LEFT, padx=16)
-
-        # Action buttons (right-aligned)
-        btn_specs = [
-            ("⬆  Load Image",      self.select_image,        'Accent.TButton'),
-            ("▶  Convert",         self.start_conversion,    'TButton'),
-            ("⎘  Copy",            self.copy_to_clipboard,   'TButton'),
-            ("💾  Save .txt",       self.save_ascii_txt,      'TButton'),
-            ("🌐  Export HTML",     self.export_html,         'TButton'),
-            ("🖼  Export PNG",      self.export_png,          'TButton'),
-            ("↺  Reset",           self.reset_settings,      'TButton'),
+    def _header(self):
+        h = tk.Frame(self.root, bg=PANEL, height=50)
+        h.pack(fill=tk.X)
+        h.pack_propagate(False)
+        tk.Label(h, text="▓▒░ ASCII CONVERTER ░▒▓", bg=PANEL, fg=GREEN,
+                 font=('Consolas', 12, 'bold')).pack(side=tk.LEFT, padx=14)
+        actions = [
+            ("↺ Reset",        self.reset,          'TButton'),
+            ("🖼 PNG",          self.export_png,     'TButton'),
+            ("🌐 HTML",         self.export_html,    'TButton'),
+            ("💾 Save",         self.save_txt,       'TButton'),
+            ("⎘ Copy",          self.copy,           'TButton'),
+            ("▶ Convert",       self.convert,        'TButton'),
+            ("⬆ Load",          self.load,           'Go.TButton'),
         ]
-        for label, cmd, style in reversed(btn_specs):
-            ttk.Button(hdr, text=label, command=cmd, style=style)\
-                .pack(side=tk.RIGHT, padx=4, pady=10)
+        for lbl, cmd, sty in actions:
+            ttk.Button(h, text=lbl, command=cmd, style=sty).pack(side=tk.RIGHT, padx=3, pady=8)
 
-    def _build_sidebar(self, parent):
-        sidebar = tk.Frame(parent, bg=THEME['bg'], width=270)
-        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
-        sidebar.pack_propagate(False)
+    def _sidebar(self, parent):
+        sb = tk.Frame(parent, bg=BG, width=265)
+        sb.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
+        sb.pack_propagate(False)
 
-        # ── Image Preview ────────────────────────────────────────────────────
-        prev_card = tk.LabelFrame(sidebar, text="  Preview  ", bg=THEME['card'],
-                                  fg=THEME['accent2'], font=('Consolas', 9, 'bold'),
-                                  bd=1, relief='flat', labelanchor='n')
-        prev_card.pack(fill=tk.X, pady=(4, 2), padx=2)
+        # preview box
+        pf = tk.LabelFrame(sb, text=" Preview ", bg=CARD, fg=CYAN,
+                           font=('Consolas', 9, 'bold'), bd=1, relief='flat', labelanchor='n')
+        pf.pack(fill=tk.X, pady=(4,2), padx=2)
+        self.preview = tk.Label(pf, bg=CARD, fg=DIM, font=('Consolas', 9),
+                                text="no image loaded", width=27, height=9, anchor='center')
+        self.preview.pack(padx=4, pady=4)
+        self.info_lbl = tk.Label(sb, text="", bg=BG, fg=DIM, font=('Consolas', 8))
+        self.info_lbl.pack()
 
-        self.preview_label = tk.Label(prev_card, bg=THEME['card'],
-                                      text="No image loaded\n\nDrop an image or\nclick ⬆ Load Image",
-                                      fg=THEME['fg_dim'], font=('Consolas', 9),
-                                      width=28, height=10, anchor='center')
-        self.preview_label.pack(padx=4, pady=4)
+        self._divider(sb, "RENDER MODE")
+        mf = tk.Frame(sb, bg=CARD)
+        mf.pack(fill=tk.X, padx=2, pady=1)
+        for text, val in [("🎨 Color", "color"), ("◐ Half-Block HD", "halfblock"), ("▓ Grayscale", "grayscale")]:
+            ttk.Radiobutton(mf, text=text, variable=self.v_mode,
+                            value=val, command=self._live).pack(anchor='w', padx=8, pady=2)
+        tk.Label(mf, text="Half-block uses ▀ — doubles vertical resolution.",
+                 bg=CARD, fg=DIM, font=('Consolas', 7), justify='left').pack(anchor='w', padx=8, pady=(0,4))
 
-        self.img_info_lbl = tk.Label(sidebar, text="", bg=THEME['bg'],
-                                     fg=THEME['fg_dim'], font=('Consolas', 8))
-        self.img_info_lbl.pack()
+        self._divider(sb, "CHARACTERS")
+        cf = tk.Frame(sb, bg=CARD)
+        cf.pack(fill=tk.X, padx=2, pady=1)
+        self.charset_box = ttk.Combobox(cf, values=list(CHARS.keys()),
+                                        textvariable=self.v_charset, state='readonly', width=22)
+        self.charset_box.pack(padx=8, pady=(6,2))
+        self.charset_box.bind("<<ComboboxSelected>>", self._live)
+        tk.Label(cf, text="custom (leave blank to use set above):",
+                 bg=CARD, fg=DIM, font=('Consolas', 7)).pack(anchor='w', padx=8)
+        tk.Entry(cf, textvariable=self.v_custom, bg=INBG, fg=FG,
+                 insertbackground=FG, font=('Consolas', 9), width=24,
+                 relief='flat').pack(padx=8, pady=(0,6))
 
-        # ── Mode ─────────────────────────────────────────────────────────────
-        self._section(sidebar, "RENDER MODE")
-        mode_f = tk.Frame(sidebar, bg=THEME['card'], bd=0)
-        mode_f.pack(fill=tk.X, padx=2, pady=1)
-        modes = [
-            ("🎨 Color ASCII",   "color"),
-            ("◐ Half-Block HD",  "halfblock"),
-            ("▓ Grayscale",      "grayscale"),
-        ]
-        for txt, val in modes:
-            r = ttk.Radiobutton(mode_f, text=txt, variable=self.mode_var,
-                                value=val, command=self._on_change)
-            r.pack(anchor='w', padx=8, pady=2)
-        tk.Label(mode_f,
-                 text="Half-Block HD uses ▀ chars for\n2× vertical resolution + full color.",
-                 bg=THEME['card'], fg=THEME['fg_dim'],
-                 font=('Consolas', 7), justify='left').pack(anchor='w', padx=8, pady=(0,4))
+        self._divider(sb, "ADJUSTMENTS")
+        af = tk.Frame(sb, bg=CARD)
+        af.pack(fill=tk.X, padx=2, pady=1)
+        self._slider(af, "Width",      self.v_width,    20,  300, True)
+        self._slider(af, "Brightness", self.v_bright,   0.1, 3.0)
+        self._slider(af, "Contrast",   self.v_contrast, 0.1, 3.0)
+        self._slider(af, "Saturation", self.v_sat,      0.0, 3.0)
 
-        # ── Characters ───────────────────────────────────────────────────────
-        self._section(sidebar, "CHARACTER SET")
-        cs_f = tk.Frame(sidebar, bg=THEME['card'])
-        cs_f.pack(fill=tk.X, padx=2, pady=1)
+        self._divider(sb, "OPTIONS")
+        of = tk.Frame(sb, bg=CARD)
+        of.pack(fill=tk.X, padx=2, pady=1)
+        ttk.Checkbutton(of, text="Invert",        variable=self.v_invert, command=self._live).pack(anchor='w', padx=8, pady=2)
+        ttk.Checkbutton(of, text="Dither (F-S)",  variable=self.v_dither, command=self._live).pack(anchor='w', padx=8, pady=2)
+        ttk.Checkbutton(of, text="Live Preview",  variable=self.v_live).pack(anchor='w', padx=8, pady=2)
 
-        self.charset_combo = ttk.Combobox(cs_f, values=list(ASCII_CHAR_SETS.keys()),
-                                          textvariable=self.charset_var,
-                                          state='readonly', width=22)
-        self.charset_combo.pack(padx=8, pady=(6, 2))
-        self.charset_combo.bind("<<ComboboxSelected>>", self._on_change)
+        tk.Label(of, text="Edge:", bg=CARD, fg=DIM, font=('Consolas', 8)).pack(anchor='w', padx=8, pady=(4,0))
+        ec = ttk.Combobox(of, values=['off','soft','hard','find'],
+                          textvariable=self.v_edge, state='readonly', width=14)
+        ec.pack(padx=8, pady=(0,4))
+        ec.bind("<<ComboboxSelected>>", self._live)
 
-        tk.Label(cs_f, text="Custom chars (overrides set):",
-                 bg=THEME['card'], fg=THEME['fg_dim'],
-                 font=('Consolas', 7)).pack(anchor='w', padx=8)
-        cust_entry = tk.Entry(cs_f, textvariable=self.custom_chars_var,
-                              bg=THEME['input_bg'], fg=THEME['fg'],
-                              insertbackground=THEME['fg'],
-                              font=('Consolas', 9), width=24, relief='flat')
-        cust_entry.pack(padx=8, pady=(0, 6))
-        cust_entry.bind('<Return>', self._on_change)
+        tk.Label(of, text="Font size:", bg=CARD, fg=DIM, font=('Consolas', 8)).pack(anchor='w', padx=8)
+        sp = ttk.Spinbox(of, from_=5, to=24, increment=1, textvariable=self.v_fontsize,
+                         width=6, command=self._apply_fontsize)
+        sp.pack(anchor='w', padx=8, pady=(0,6))
+        sp.bind('<Return>', lambda e: self._apply_fontsize())
 
-        # ── Image Adjustments ────────────────────────────────────────────────
-        self._section(sidebar, "IMAGE ADJUSTMENTS")
-        adj_f = tk.Frame(sidebar, bg=THEME['card'])
-        adj_f.pack(fill=tk.X, padx=2, pady=1)
-
-        sliders = [
-            ("Width (chars)",  self.width_var,      20, 300, 1,  True),
-            ("Brightness",     self.brightness_var,  0.1, 3.0, 0.05, False),
-            ("Contrast",       self.contrast_var,    0.1, 3.0, 0.05, False),
-            ("Saturation",     self.saturation_var,  0.0, 3.0, 0.05, False),
-        ]
-        for label, var, lo, hi, res, is_int in sliders:
-            self._slider_row(adj_f, label, var, lo, hi, res, is_int)
-
-        # ── Options ──────────────────────────────────────────────────────────
-        self._section(sidebar, "OPTIONS")
-        opt_f = tk.Frame(sidebar, bg=THEME['card'])
-        opt_f.pack(fill=tk.X, padx=2, pady=1)
-
-        checks = [
-            ("Invert",        self.invert_var),
-            ("Floyd-Steinberg Dither", self.dither_var),
-            ("Live Preview",  self.live_var),
-        ]
-        for txt, var in checks:
-            ttk.Checkbutton(opt_f, text=txt, variable=var,
-                            command=self._on_change).pack(anchor='w', padx=8, pady=2)
-
-        tk.Label(opt_f, text="Edge Enhancement:",
-                 bg=THEME['card'], fg=THEME['fg_dim'],
-                 font=('Consolas', 8)).pack(anchor='w', padx=8, pady=(4, 0))
-        edge_combo = ttk.Combobox(opt_f, values=list(EDGE_CHARS.keys()),
-                                  textvariable=self.edge_var,
-                                  state='readonly', width=16)
-        edge_combo.pack(padx=8, pady=(0, 6))
-        edge_combo.bind("<<ComboboxSelected>>", self._on_change)
-
-        # Font size for output
-        tk.Label(opt_f, text="Output Font Size:",
-                 bg=THEME['card'], fg=THEME['fg_dim'],
-                 font=('Consolas', 8)).pack(anchor='w', padx=8)
-        fs_spin = ttk.Spinbox(opt_f, from_=5, to=24, increment=1,
-                              textvariable=self.font_size_var, width=6,
-                              command=self._update_font_size)
-        fs_spin.pack(anchor='w', padx=8, pady=(0, 6))
-        fs_spin.bind('<Return>', lambda e: self._update_font_size())
-
-    # ─── Output panel ────────────────────────────────────────────────────────
-    def _build_output_panel(self, parent):
-        right = tk.Frame(parent, bg=THEME['bg'])
+    def _output(self, parent):
+        right = tk.Frame(parent, bg=BG)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Toolbar above output
-        toolbar = tk.Frame(right, bg=THEME['bg'], height=30)
-        toolbar.pack(fill=tk.X)
-        toolbar.pack_propagate(False)
+        # tiny toolbar
+        tb = tk.Frame(right, bg=BG, height=28)
+        tb.pack(fill=tk.X)
+        tb.pack_propagate(False)
+        tk.Label(tb, text="OUTPUT", bg=BG, fg=DIM, font=('Consolas', 8)).pack(side=tk.LEFT, padx=6)
+        for sym, d in [("−",-1),("+",1)]:
+            tk.Button(tb, text=f" {sym} ", bg=BTN, fg=FG, font=('Consolas', 10, 'bold'),
+                      relief='flat', bd=0, activebackground='#2a2a2a', activeforeground=GREEN,
+                      command=lambda delta=d: self._zoom(delta)).pack(side=tk.RIGHT, padx=1)
+        tk.Label(tb, text="zoom:", bg=BG, fg=DIM, font=('Consolas', 8)).pack(side=tk.RIGHT, padx=(0,4))
 
-        tk.Label(toolbar, text="OUTPUT", bg=THEME['bg'],
-                 fg=THEME['fg_dim'], font=('Consolas', 8)).pack(side=tk.LEFT, padx=6)
+        # gif controls — hidden until needed
+        self.gif_bar = tk.Frame(right, bg=PANEL)
+        self._gif_controls(self.gif_bar)
 
-        # Zoom buttons
-        for sym, delta in [("−", -1), ("+", +1)]:
-            tk.Button(toolbar, text=f"  {sym}  ", bg=THEME['btn'], fg=THEME['fg'],
-                      font=('Consolas', 10, 'bold'), relief='flat', bd=0,
-                      activebackground=THEME['btn_hover'], activeforeground=THEME['accent'],
-                      command=lambda d=delta: self._zoom(d)).pack(side=tk.RIGHT, padx=1)
-        tk.Label(toolbar, text="zoom:", bg=THEME['bg'],
-                 fg=THEME['fg_dim'], font=('Consolas', 8)).pack(side=tk.RIGHT, padx=(0, 4))
+        self.out = tk.Text(right, wrap=tk.NONE,
+                           font=('Courier New', self.v_fontsize.get()),
+                           bg=INBG, fg=FG, insertbackground=FG,
+                           selectbackground=GREEN, selectforeground='#000',
+                           relief='flat', bd=4, cursor='arrow')
+        self.out.pack(fill=tk.BOTH, expand=True, pady=(2,0))
 
-        # Output text widget
-        self.output_text = tk.Text(
-            right, wrap=tk.NONE,
-            font=('Courier New', self.font_size_var.get()),
-            bg=THEME['input_bg'], fg=THEME['fg'],
-            insertbackground=THEME['fg'],
-            selectbackground=THEME['accent'], selectforeground='#000000',
-            relief='flat', bd=4,
-            cursor='arrow',
-        )
-        self.output_text.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
+        ys = ttk.Scrollbar(right, orient='vertical',   command=self.out.yview)
+        xs = ttk.Scrollbar(right, orient='horizontal', command=self.out.xview)
+        self.out.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        ys.place(relx=1.0, rely=0,   relheight=1.0, anchor='ne')
+        xs.place(relx=0,   rely=1.0, relwidth=1.0,  anchor='sw')
 
-        # Scrollbars
-        vsb = ttk.Scrollbar(right, orient='vertical',
-                            command=self.output_text.yview)
-        hsb = ttk.Scrollbar(right, orient='horizontal',
-                            command=self.output_text.xview)
-        self.output_text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        vsb.place(relx=1.0, rely=0, relheight=1.0, anchor='ne')
-        hsb.place(relx=0, rely=1.0, relwidth=1.0, anchor='sw')
+    def _gif_controls(self, bar):
+        self.play_btn = tk.Button(bar, text="⏸ Pause", bg=BTN, fg=GREEN,
+                                  font=('Consolas', 9, 'bold'), relief='flat', bd=0,
+                                  activebackground='#2a2a2a', activeforeground=GREEN,
+                                  command=self.toggle_play, width=9)
+        self.play_btn.pack(side=tk.LEFT, padx=(8,4), pady=4)
 
-    def _build_status_bar(self):
-        bar = tk.Frame(self.root, bg=THEME['panel'], height=28)
+        tk.Button(bar, text="⏹", bg=BTN, fg=DIM, font=('Consolas', 9),
+                  relief='flat', bd=0, activebackground='#2a2a2a',
+                  command=self.stop_gif).pack(side=tk.LEFT, padx=2, pady=4)
+
+        tk.Label(bar, text="frame:", bg=PANEL, fg=DIM, font=('Consolas', 8)).pack(side=tk.LEFT, padx=(10,2))
+        self.frame_lbl = tk.Label(bar, text="—", bg=PANEL, fg=GREEN, font=('Consolas', 8), width=7)
+        self.frame_lbl.pack(side=tk.LEFT)
+
+        self.scrubber = tk.Scale(bar, from_=0, to=0, orient=tk.HORIZONTAL, variable=self.v_frame,
+                                 bg=PANEL, fg=GREEN, highlightthickness=0, troughcolor=BORDER,
+                                 activebackground=GREEN, length=240, relief='flat', showvalue=False,
+                                 command=self._scrub)
+        self.scrubber.pack(side=tk.LEFT, padx=6)
+
+        tk.Label(bar, text="speed:", bg=PANEL, fg=DIM, font=('Consolas', 8)).pack(side=tk.LEFT, padx=(8,2))
+        self.speed_lbl = tk.Label(bar, text="100%", bg=PANEL, fg=GREEN, font=('Consolas', 8), width=4)
+        self.speed_lbl.pack(side=tk.LEFT)
+        tk.Scale(bar, from_=10, to=400, orient=tk.HORIZONTAL, variable=self.v_speed,
+                 bg=PANEL, fg=GREEN, highlightthickness=0, troughcolor=BORDER,
+                 activebackground=GREEN, length=110, relief='flat', showvalue=False,
+                 command=lambda v: self.speed_lbl.config(text=f"{int(float(v))}%")
+                 ).pack(side=tk.LEFT, padx=4)
+
+        tk.Checkbutton(bar, text="loop", variable=self.v_loop, bg=PANEL, fg=FG,
+                       font=('Consolas', 8), selectcolor=INBG,
+                       activebackground=PANEL).pack(side=tk.LEFT, padx=6)
+
+    def _statusbar(self):
+        bar = tk.Frame(self.root, bg=PANEL, height=26)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
         bar.pack_propagate(False)
+        self.progress = ttk.Progressbar(bar, orient='horizontal', mode='determinate',
+                                        variable=self.v_progress, length=180)
+        self.progress.pack(side=tk.LEFT, padx=8, pady=5)
+        tk.Label(bar, textvariable=self.v_status, bg=PANEL, fg=DIM,
+                 font=('Consolas', 8)).pack(side=tk.LEFT, padx=4)
+        self.stats = tk.Label(bar, text="", bg=PANEL, fg=GREEN, font=('Consolas', 8))
+        self.stats.pack(side=tk.RIGHT, padx=10)
 
-        self.progress_bar = ttk.Progressbar(bar, orient='horizontal',
-                                            mode='determinate',
-                                            variable=self.progress_var,
-                                            length=200)
-        self.progress_bar.pack(side=tk.LEFT, padx=8, pady=6)
+    def _divider(self, parent, title):
+        f = tk.Frame(parent, bg=BG)
+        f.pack(fill=tk.X, padx=2, pady=(8,0))
+        tk.Label(f, text=f"  {title}", bg=BG, fg=GREEN, font=('Consolas', 8, 'bold')).pack(anchor='w')
+        tk.Frame(f, bg=BORDER, height=1).pack(fill=tk.X, pady=(1,2))
 
-        tk.Label(bar, textvariable=self.status_var, bg=THEME['panel'],
-                 fg=THEME['fg_dim'], font=('Consolas', 8)).pack(side=tk.LEFT, padx=4)
-
-        self.stats_lbl = tk.Label(bar, text="", bg=THEME['panel'],
-                                  fg=THEME['accent'], font=('Consolas', 8))
-        self.stats_lbl.pack(side=tk.RIGHT, padx=12)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  HELPER WIDGETS
-    # ─────────────────────────────────────────────────────────────────────────
-    def _section(self, parent, title):
-        f = tk.Frame(parent, bg=THEME['bg'])
-        f.pack(fill=tk.X, padx=2, pady=(8, 0))
-        tk.Label(f, text=f"  {title}",
-                 bg=THEME['bg'], fg=THEME['accent'],
-                 font=('Consolas', 8, 'bold')).pack(anchor='w')
-        tk.Frame(f, bg=THEME['border'], height=1).pack(fill=tk.X, pady=(1, 2))
-
-    def _slider_row(self, parent, label, var, lo, hi, res, is_int=False):
-        row = tk.Frame(parent, bg=THEME['card'])
+    def _slider(self, parent, label, var, lo, hi, is_int=False):
+        row = tk.Frame(parent, bg=CARD)
         row.pack(fill=tk.X, padx=4, pady=1)
-
-        tk.Label(row, text=label, bg=THEME['card'], fg=THEME['fg'],
-                 font=('Consolas', 8), width=16, anchor='w').pack(side=tk.LEFT)
-
-        val_lbl = tk.Label(row, bg=THEME['card'], fg=THEME['accent'],
-                           font=('Consolas', 8), width=5, anchor='e')
-        val_lbl.pack(side=tk.RIGHT)
-
-        def update_label(*_):
+        tk.Label(row, text=label, bg=CARD, fg=FG, font=('Consolas', 8),
+                 width=12, anchor='w').pack(side=tk.LEFT)
+        vl = tk.Label(row, bg=CARD, fg=GREEN, font=('Consolas', 8), width=5, anchor='e')
+        vl.pack(side=tk.RIGHT)
+        def upd(*_):
             v = var.get()
-            val_lbl.config(text=str(v) if is_int else f"{v:.2f}")
+            vl.config(text=str(v) if is_int else f"{v:.2f}")
+        var.trace_add('write', upd); upd()
+        tk.Scale(row, from_=lo, to=hi, orient=tk.HORIZONTAL,
+                 resolution=1 if is_int else 0.05, variable=var,
+                 bg=CARD, fg=GREEN, highlightthickness=0, troughcolor=BORDER,
+                 activebackground=GREEN, length=135, relief='flat',
+                 command=lambda v: self._live()).pack(side=tk.LEFT, padx=4)
 
-        var.trace_add('write', update_label)
-        update_label()
+    def _shortcuts(self):
+        self.root.bind('<Control-o>',      lambda e: self.load())
+        self.root.bind('<Control-Return>', lambda e: self.convert())
+        self.root.bind('<Control-s>',      lambda e: self.save_txt())
+        self.root.bind('<Control-e>',      lambda e: self.export_html())
+        self.root.bind('<Control-p>',      lambda e: self.export_png())
+        self.root.bind('<space>',          lambda e: self.toggle_play())
+        self.root.bind('<Control-equal>',  lambda e: self._zoom(1))
+        self.root.bind('<Control-minus>',  lambda e: self._zoom(-1))
 
-        scale_kw = dict(from_=lo, to=hi, orient=tk.HORIZONTAL,
-                        resolution=res, variable=var,
-                        bg=THEME['card'], fg=THEME['accent'],
-                        highlightthickness=0, troughcolor=THEME['border'],
-                        activebackground=THEME['accent'],
-                        length=140, relief='flat',
-                        command=lambda v: self._on_change())
-        if is_int:
-            scale_kw['resolution'] = 1
-        tk.Scale(row, **scale_kw).pack(side=tk.LEFT, padx=4)
+    def _apply_fontsize(self):
+        self.out.configure(font=('Courier New', self.v_fontsize.get()))
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  SHORTCUTS
-    # ─────────────────────────────────────────────────────────────────────────
-    def _bind_shortcuts(self):
-        binds = [
-            ('<Control-o>', lambda e: self.select_image()),
-            ('<Control-Return>', lambda e: self.start_conversion()),
-            ('<Control-s>', lambda e: self.save_ascii_txt()),
-            ('<Control-e>', lambda e: self.export_html()),
-            ('<Control-p>', lambda e: self.export_png()),
-            ('<Control-c>', lambda e: self.copy_to_clipboard()),
-            ('<Control-equal>', lambda e: self._zoom(+1)),
-            ('<Control-minus>', lambda e: self._zoom(-1)),
-        ]
-        for seq, fn in binds:
-            self.root.bind(seq, fn)
+    def _zoom(self, d):
+        self.v_fontsize.set(max(4, min(28, self.v_fontsize.get() + d)))
+        self._apply_fontsize()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  IMAGE LOADING
-    # ─────────────────────────────────────────────────────────────────────────
-    def select_image(self):
-        ft = [('Images', '*.jpg *.jpeg *.png *.bmp *.gif *.webp *.tiff'), ('All', '*.*')]
-        path = filedialog.askopenfilename(filetypes=ft)
-        if not path:
-            return
-        try:
-            self.original_image = Image.open(path)
-            self.image_path = path
-            self._update_preview()
-            w, h = self.original_image.size
-            self.img_info_lbl.config(
-                text=f"{os.path.basename(path)}\n{w}×{h} px | {self.original_image.mode}")
-            self.status_var.set(f"Loaded: {os.path.basename(path)}")
-        except Exception as exc:
-            messagebox.showerror("Error", f"Cannot open image:\n{exc}")
+    def _live(self, *_):
+        if self.v_live.get() and self.img and not self.converting:
+            self.convert()
 
-    def _update_preview(self):
-        if not self.original_image:
-            return
-        img = self.original_image.copy()
-        img.thumbnail((240, 180), Image.Resampling.LANCZOS)
-        self.preview_photo = ImageTk.PhotoImage(img)
-        self.preview_label.configure(image=self.preview_photo, text='')
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  CONVERSION
-    # ─────────────────────────────────────────────────────────────────────────
     def _get_chars(self):
-        custom = self.custom_chars_var.get().strip()
-        if custom:
-            return list(custom)
-        chars = ASCII_CHAR_SETS.get(self.charset_var.get(), [])
-        return chars if chars else list(' .:-=+*#%@')
+        c = self.v_custom.get().strip()
+        return list(c) if c else CHARS.get(self.v_charset.get(), list(' .:-=+*#%@'))
 
-    def start_conversion(self):
-        if not self.original_image:
-            messagebox.showwarning("No image", "Please load an image first!")
-            return
-        if self._converting:
-            return
-        self._converting = True
-        self._set_buttons_state(tk.DISABLED)
-        self.progress_var.set(0)
-        self.status_var.set("Converting…")
-        thread = threading.Thread(target=self._worker, daemon=True)
-        thread.start()
-
-    def _worker(self):
-        try:
-            img = self.original_image.copy()
-            # Apply saturation before passing to engine
-            if self.saturation_var.get() != 1.0:
-                img_rgb = img.convert('RGB')
-                img = ImageEnhance.Color(img_rgb).enhance(self.saturation_var.get())
-
-            mode    = self.mode_var.get()
-            width   = self.width_var.get()
-            bright  = self.brightness_var.get()
-            contrast = self.contrast_var.get()
-            invert  = self.invert_var.get()
-            dither  = self.dither_var.get()
-            edge    = self.edge_var.get()
-            chars   = self._get_chars()
-
-            def prog(v):
-                self.root.after(0, self.progress_var.set, v)
-
-            if mode == 'grayscale':
-                rows = ConversionEngine.convert_grayscale(
-                    img, width, chars, bright, contrast, invert, dither, edge, prog)
-            elif mode == 'color':
-                rows = ConversionEngine.convert_color(
-                    img, width, chars, bright, contrast, invert, dither, edge, prog)
-            elif mode == 'halfblock':
-                rows = ConversionEngine.convert_halfblock(
-                    img, width, bright, contrast, invert, prog)
-            else:
-                rows = []
-
-            self._last_result = (mode, rows)
-            self.root.after(0, self._render_output, mode, rows)
-
-        except Exception as exc:
-            self.root.after(0, lambda: messagebox.showerror("Conversion error", str(exc)))
-        finally:
-            self._converting = False
-            self.root.after(0, self._set_buttons_state, tk.NORMAL)
-            self.root.after(0, self.status_var.set, "Done ✓")
-
-    def _render_output(self, mode, rows):
-        widget = self.output_text
-        widget.config(state=tk.NORMAL)
-        widget.delete('1.0', tk.END)
-
-        # Clear old color tags
-        for tag in list(self._registered_tags):
-            try:
-                widget.tag_delete(tag)
-            except Exception:
-                pass
-        self._registered_tags.clear()
-
-        if mode == 'grayscale':
-            widget.insert(tk.END, '\n'.join(rows))
-            char_count = sum(len(r) for r in rows)
-            line_count = len(rows)
-
-        elif mode == 'color':
-            char_count = 0
-            line_count = len(rows)
-            for i, row in enumerate(rows):
-                for char, col in row:
-                    tag = THEME['tag_prefix'] + col[1:]   # strip '#'
-                    if tag not in self._registered_tags:
-                        widget.tag_configure(tag, foreground=col)
-                        self._registered_tags.add(tag)
-                    widget.insert(tk.END, char, tag)
-                    char_count += 1
-                if i < line_count - 1:
-                    widget.insert(tk.END, '\n')
-
-        elif mode == 'halfblock':
-            char_count = 0
-            line_count = len(rows)
-            for i, row in enumerate(rows):
-                for char, fg, bg in row:
-                    ftag = 'fg_' + fg[1:]
-                    btag = 'bg_' + bg[1:]
-                    combo = ftag + '__' + btag
-                    if combo not in self._registered_tags:
-                        widget.tag_configure(combo, foreground=fg, background=bg)
-                        self._registered_tags.add(combo)
-                    widget.insert(tk.END, char, combo)
-                    char_count += 1
-                if i < line_count - 1:
-                    widget.insert(tk.END, '\n')
-
-        widget.config(state=tk.DISABLED)
-
-        self.stats_lbl.config(
-            text=f"{line_count} rows × {self.width_var.get()} cols  |  {char_count:,} chars")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  FONT / ZOOM
-    # ─────────────────────────────────────────────────────────────────────────
-    def _update_font_size(self):
-        self.output_text.configure(font=('Courier New', self.font_size_var.get()))
-
-    def _zoom(self, delta):
-        new_size = max(4, min(28, self.font_size_var.get() + delta))
-        self.font_size_var.set(new_size)
-        self._update_font_size()
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  LIVE PREVIEW / CHANGE HANDLER
-    # ─────────────────────────────────────────────────────────────────────────
-    def _on_change(self, *_):
-        if self.live_var.get() and self.original_image and not self._converting:
-            self.start_conversion()
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  CLIPBOARD
-    # ─────────────────────────────────────────────────────────────────────────
-    def copy_to_clipboard(self):
-        txt = self.output_text.get('1.0', tk.END).strip()
-        if not txt:
-            messagebox.showwarning("Empty", "Nothing to copy yet.")
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(txt)
-        self.status_var.set("Copied to clipboard ✓")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  SAVE .TXT
-    # ─────────────────────────────────────────────────────────────────────────
-    def save_ascii_txt(self):
-        txt = self.output_text.get('1.0', tk.END).strip()
-        if not txt:
-            messagebox.showwarning("Empty", "Nothing to save yet.")
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension='.txt',
-            filetypes=[('Text', '*.txt'), ('All', '*.*')])
-        if path:
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(txt)
-            self.status_var.set(f"Saved: {os.path.basename(path)} ✓")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  EXPORT HTML (color-preserving)
-    # ─────────────────────────────────────────────────────────────────────────
-    def export_html(self):
-        if not self._last_result:
-            messagebox.showwarning("Empty", "Convert an image first.")
-            return
-        mode, rows = self._last_result
-        path = filedialog.asksaveasfilename(
-            defaultextension='.html',
-            filetypes=[('HTML', '*.html'), ('All', '*.*')])
-        if not path:
-            return
-        html = ConversionEngine.rows_to_html(
-            rows, mode, font_size=self.font_size_var.get(),
-            bg=self.bg_color_var.get())
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(html)
-        self.status_var.set(f"HTML exported: {os.path.basename(path)} ✓")
-        if messagebox.askyesno("Open?", "Open the exported HTML in browser?"):
-            import webbrowser
-            webbrowser.open(f'file://{os.path.abspath(path)}')
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  EXPORT PNG
-    # ─────────────────────────────────────────────────────────────────────────
-    def export_png(self):
-        if not self._last_result:
-            messagebox.showwarning("Empty", "Convert an image first.")
-            return
-        mode, rows = self._last_result
-
-        path = filedialog.asksaveasfilename(
-            defaultextension='.png',
-            filetypes=[('PNG', '*.png'), ('All', '*.*')])
-        if not path:
-            return
-
-        try:
-            fs = max(8, self.font_size_var.get())
-            try:
-                fnt = ImageFont.truetype("cour.ttf", fs)
-            except Exception:
-                try:
-                    fnt = ImageFont.truetype("DejaVuSansMono.ttf", fs)
-                except Exception:
-                    fnt = ImageFont.load_default()
-
-            # Measure one character
-            dummy = Image.new('RGB', (100, 100))
-            dd = ImageDraw.Draw(dummy)
-            bbox = dd.textbbox((0, 0), 'A', font=fnt)
-            cw = bbox[2] - bbox[0] + 1
-            ch = bbox[3] - bbox[1] + 2
-
-            if mode == 'grayscale':
-                cols_n = max(len(r) for r in rows)
-                W = cols_n * cw
-                H = len(rows) * ch
-                img = Image.new('RGB', (W, H), color='black')
-                draw = ImageDraw.Draw(img)
-                for ri, row in enumerate(rows):
-                    draw.text((0, ri * ch), row, font=fnt, fill='white')
-
-            elif mode == 'color':
-                cols_n = max(len(r) for r in rows)
-                W = cols_n * cw
-                H = len(rows) * ch
-                img = Image.new('RGB', (W, H), color='black')
-                draw = ImageDraw.Draw(img)
-                for ri, row in enumerate(rows):
-                    x = 0
-                    for char, col in row:
-                        draw.text((x, ri * ch), char, font=fnt, fill=col)
-                        x += cw
-
-            elif mode == 'halfblock':
-                cols_n = max(len(r) for r in rows)
-                W = cols_n * cw
-                H = len(rows) * ch
-                img = Image.new('RGB', (W, H), color='black')
-                draw = ImageDraw.Draw(img)
-                for ri, row in enumerate(rows):
-                    x = 0
-                    for char, fg, bg in row:
-                        draw.rectangle([x, ri*ch, x+cw-1, ri*ch+ch-1], fill=bg)
-                        draw.text((x, ri * ch), char, font=fnt, fill=fg)
-                        x += cw
-
-            img.save(path, 'PNG')
-            self.status_var.set(f"PNG exported: {os.path.basename(path)} ✓")
-        except Exception as exc:
-            messagebox.showerror("Export error", str(exc))
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  RESET
-    # ─────────────────────────────────────────────────────────────────────────
-    def reset_settings(self):
-        self.width_var.set(120)
-        self.brightness_var.set(1.0)
-        self.contrast_var.set(1.1)
-        self.saturation_var.set(1.2)
-        self.invert_var.set(False)
-        self.dither_var.set(False)
-        self.live_var.set(False)
-        self.charset_var.set("Standard")
-        self.edge_var.set("off")
-        self.font_size_var.set(9)
-        self.custom_chars_var.set("")
-        self._update_font_size()
-        self.status_var.set("Settings reset ✓")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  BUTTON STATE
-    # ─────────────────────────────────────────────────────────────────────────
-    def _set_buttons_state(self, state):
-        def walk(widget):
-            for child in widget.winfo_children():
+    def _set_ui(self, enabled):
+        state = tk.NORMAL if enabled else tk.DISABLED
+        def walk(w):
+            for child in w.winfo_children():
                 if isinstance(child, (ttk.Button, tk.Button)):
-                    try:
-                        child.config(state=state)
-                    except Exception:
-                        pass
+                    try: child.config(state=state)
+                    except: pass
                 walk(child)
         walk(self.root)
 
+    # loading
+    def load(self):
+        path = filedialog.askopenfilename(
+            filetypes=[('Images', '*.jpg *.jpeg *.png *.bmp *.gif *.webp *.tiff'), ('All', '*.*')])
+        if not path: return
+        try:
+            raw = Image.open(path)
+            self.img_path = path
+            self.stop_gif()
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
-def main():
+            # count frames
+            nf = 0
+            try:
+                while True: raw.seek(nf); nf += 1
+            except EOFError: pass
+            raw.seek(0)
+
+            if nf > 1 and path.lower().endswith('.gif'):
+                self.is_gif = True
+                self.v_status.set(f"Extracting {nf} frames...")
+                self.root.update()
+                self.gif_frames    = extract_gif_frames(raw)
+                self.gif_durations = [f[1] for f in self.gif_frames]
+                self.gif_converted = []
+                self.img           = self.gif_frames[0][0]
+                self.result        = None
+                n = len(self.gif_frames)
+                w, h = self.img.size
+                self.info_lbl.config(text=f"{os.path.basename(path)}\n{w}×{h}  {n} frames  GIF")
+                self.v_status.set(f"Loaded GIF — {n} frames. Hit Convert.")
+                self.scrubber.config(to=max(0, n-1))
+                self.frame_lbl.config(text=f"—/{n}")
+                self._build_gif_thumbs()
+                self._cycle_gif_preview()
+            else:
+                self.is_gif = False
+                self.gif_frames = []
+                self.gif_converted = []
+                self.img = raw.convert('RGB')
+                self.gif_bar.pack_forget()
+                w, h = self.img.size
+                self.info_lbl.config(text=f"{os.path.basename(path)}\n{w}×{h} | {raw.mode}")
+                self.v_status.set(f"Loaded: {os.path.basename(path)}")
+                self._update_preview()
+        except Exception as e:
+            messagebox.showerror("Couldn't open", str(e))
+
+    def _update_preview(self):
+        if not self.img: return
+        thumb = self.img.copy()
+        thumb.thumbnail((235, 175), Image.Resampling.LANCZOS)
+        self._preview_photo = ImageTk.PhotoImage(thumb)
+        self.preview.configure(image=self._preview_photo, text='')
+
+    def _build_gif_thumbs(self):
+        if self.gif_thumb_job: self.root.after_cancel(self.gif_thumb_job)
+        self.gif_thumb_photos = []
+        for pil, _ in self.gif_frames:
+            t = pil.copy(); t.thumbnail((235, 175), Image.Resampling.LANCZOS)
+            self.gif_thumb_photos.append(ImageTk.PhotoImage(t))
+        self.gif_thumb_idx = 0
+
+    def _cycle_gif_preview(self):
+        if not self.gif_thumb_photos: return
+        photo = self.gif_thumb_photos[self.gif_thumb_idx]
+        self.preview.configure(image=photo, text='')
+        self._preview_photo = photo
+        self.gif_thumb_idx = (self.gif_thumb_idx + 1) % len(self.gif_thumb_photos)
+        dur = self.gif_durations[self.gif_thumb_idx] if self.gif_durations else 100
+        self.gif_thumb_job = self.root.after(max(50, dur), self._cycle_gif_preview)
+
+    # conversion
+    def convert(self):
+        if not self.img:
+            messagebox.showwarning("Nothing loaded", "Load an image first!"); return
+        if self.converting: return
+        self.converting = True
+        self.stop_gif()
+        self._set_ui(False)
+        self.v_progress.set(0)
+        if self.is_gif:
+            self.v_status.set(f"Converting {len(self.gif_frames)} frames...")
+            threading.Thread(target=self._gif_thread, daemon=True).start()
+        else:
+            self.v_status.set("Converting...")
+            threading.Thread(target=self._static_thread, daemon=True).start()
+
+    def _static_thread(self):
+        try:
+            rows = convert_frame(
+                self.img, self.v_mode.get(), self.v_width.get(), self._get_chars(),
+                self.v_bright.get(), self.v_contrast.get(), self.v_sat.get(),
+                self.v_invert.get(), self.v_dither.get(), self.v_edge.get(),
+                lambda v: self.root.after(0, self.v_progress.set, v))
+            self.result = (self.v_mode.get(), rows)
+            self.root.after(0, self._show, self.v_mode.get(), rows)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+        finally:
+            self.converting = False
+            self.root.after(0, self._set_ui, True)
+            self.root.after(0, self.v_status.set, "Done ✓")
+
+    def _gif_thread(self):
+        try:
+            mode = self.v_mode.get()
+            total = len(self.gif_frames)
+            out = []
+            for i, (frame, _) in enumerate(self.gif_frames):
+                rows = convert_frame(
+                    frame, mode, self.v_width.get(), self._get_chars(),
+                    self.v_bright.get(), self.v_contrast.get(), self.v_sat.get(),
+                    self.v_invert.get(), self.v_dither.get(), self.v_edge.get())
+                out.append(rows)
+                self.root.after(0, self.v_progress.set, int((i+1)/total*100))
+                self.root.after(0, self.v_status.set, f"Frame {i+1}/{total}...")
+            self.gif_converted = out
+            self.gif_mode = mode
+            self.root.after(0, self._gif_ready, mode)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+        finally:
+            self.converting = False
+            self.root.after(0, self._set_ui, True)
+
+    def _gif_ready(self, mode):
+        n = len(self.gif_converted)
+        self.scrubber.config(to=max(0, n-1))
+        self.gif_bar.pack(fill=tk.X, before=self.out)
+        self.anim_idx = 0
+        self.playing = True
+        self.play_btn.config(text="⏸ Pause")
+        self.v_status.set(f"Done ✓  {n} frames — Space to pause")
+        self._tick()
+
+    # playback
+    def _tick(self):
+        if not self.playing or not self.gif_converted: return
+        rows = self.gif_converted[self.anim_idx]
+        self._show(self.gif_mode, rows)
+        self.v_frame.set(self.anim_idx)
+        self.frame_lbl.config(text=f"{self.anim_idx+1}/{len(self.gif_converted)}")
+
+        nxt = self.anim_idx + 1
+        if nxt >= len(self.gif_converted):
+            if not self.v_loop.get():
+                self.playing = False
+                self.play_btn.config(text="▶ Play")
+                return
+            nxt = 0
+
+        delay = max(16, int((self.gif_durations[self.anim_idx] if self.gif_durations else 100)
+                            / (self.v_speed.get() / 100.0)))
+        self.anim_idx = nxt
+        self.anim_job = self.root.after(delay, self._tick)
+
+    def toggle_play(self):
+        if not self.gif_converted: return
+        if self.playing:
+            self.playing = False
+            if self.anim_job: self.root.after_cancel(self.anim_job)
+            self.play_btn.config(text="▶ Play")
+        else:
+            self.playing = True
+            self.play_btn.config(text="⏸ Pause")
+            self._tick()
+
+    def stop_gif(self):
+        self.playing = False
+        if self.anim_job: self.root.after_cancel(self.anim_job); self.anim_job = None
+        self.anim_idx = 0
+        self.v_frame.set(0)
+        if hasattr(self, 'play_btn'): self.play_btn.config(text="▶ Play")
+
+    def _scrub(self, val):
+        if not self.gif_converted: return
+        idx = max(0, min(int(float(val)), len(self.gif_converted)-1))
+        self.anim_idx = idx
+        self._show(self.gif_mode, self.gif_converted[idx])
+        self.frame_lbl.config(text=f"{idx+1}/{len(self.gif_converted)}")
+
+    # rendering text widget
+    def _show(self, mode, rows):
+        w = self.out
+        w.config(state=tk.NORMAL)
+        w.delete('1.0', tk.END)
+
+        # only clear tags when not mid-animation (slow otherwise)
+        if not self.playing:
+            for tag in list(self.tags):
+                try: w.tag_delete(tag)
+                except: pass
+            self.tags.clear()
+
+        nrows = len(rows)
+        chars = 0
+
+        if mode == 'grayscale':
+            w.insert(tk.END, '\n'.join(rows))
+            chars = sum(len(r) for r in rows)
+        elif mode == 'color':
+            for i, row in enumerate(rows):
+                for ch, col in row:
+                    t = 'c' + col[1:]
+                    if t not in self.tags:
+                        w.tag_configure(t, foreground=col); self.tags.add(t)
+                    w.insert(tk.END, ch, t); chars += 1
+                if i < nrows-1: w.insert(tk.END, '\n')
+        elif mode == 'halfblock':
+            for i, row in enumerate(rows):
+                for ch, fg, bg in row:
+                    t = 'h' + fg[1:] + bg[1:]
+                    if t not in self.tags:
+                        w.tag_configure(t, foreground=fg, background=bg); self.tags.add(t)
+                    w.insert(tk.END, ch, t); chars += 1
+                if i < nrows-1: w.insert(tk.END, '\n')
+
+        w.config(state=tk.DISABLED)
+        if not self.playing:
+            self.stats.config(text=f"{nrows} rows × {self.v_width.get()} cols  {chars:,} chars")
+
+    # exports
+    def copy(self):
+        txt = self.out.get('1.0', tk.END).strip()
+        if not txt: messagebox.showwarning("Empty", "Nothing to copy."); return
+        self.root.clipboard_clear(); self.root.clipboard_append(txt)
+        self.v_status.set("Copied ✓")
+
+    def save_txt(self):
+        txt = self.out.get('1.0', tk.END).strip()
+        if not txt: messagebox.showwarning("Empty", "Nothing to save."); return
+        path = filedialog.asksaveasfilename(defaultextension='.txt',
+                                            filetypes=[('Text', '*.txt'), ('All', '*.*')])
+        if path:
+            open(path, 'w', encoding='utf-8').write(txt)
+            self.v_status.set("Saved ✓")
+
+    def export_html(self):
+        if self.is_gif and self.gif_converted:
+            path = filedialog.asksaveasfilename(defaultextension='.html',
+                                                filetypes=[('HTML', '*.html'), ('All', '*.*')])
+            if not path: return
+            html = make_animated_html(self.gif_converted, self.gif_durations, self.gif_mode,
+                                      fontsize=self.v_fontsize.get())
+            open(path, 'w', encoding='utf-8').write(html)
+            self.v_status.set("Animated HTML exported ✓")
+            if messagebox.askyesno("Open?", "Open in browser?"):
+                import webbrowser; webbrowser.open('file://' + os.path.abspath(path))
+        elif self.result:
+            mode, rows = self.result
+            path = filedialog.asksaveasfilename(defaultextension='.html',
+                                                filetypes=[('HTML', '*.html'), ('All', '*.*')])
+            if not path: return
+            open(path, 'w', encoding='utf-8').write(
+                make_static_html(rows, mode, fontsize=self.v_fontsize.get()))
+            self.v_status.set("HTML exported ✓")
+            if messagebox.askyesno("Open?", "Open in browser?"):
+                import webbrowser; webbrowser.open('file://' + os.path.abspath(path))
+        else:
+            messagebox.showwarning("Nothing", "Convert something first.")
+
+    def export_png(self):
+        if self.is_gif and self.gif_converted:
+            all_frames = messagebox.askyesno("GIF export",
+                f"Export all {len(self.gif_converted)} frames as separate PNGs?\n"
+                "Yes = all to a folder, No = just current frame")
+            if all_frames:
+                folder = filedialog.askdirectory(title="Output folder")
+                if not folder: return
+                fnt = self._get_font(); cw, ch = self._measure(fnt)
+                base = os.path.splitext(os.path.basename(self.img_path))[0]
+                def go():
+                    for i, rows in enumerate(self.gif_converted):
+                        rows_to_image(rows, self.gif_mode, fnt, cw, ch)\
+                            .save(os.path.join(folder, f"{base}_{i:04d}.png"))
+                        self.root.after(0, self.v_progress.set, int((i+1)/len(self.gif_converted)*100))
+                    self.root.after(0, self.v_status.set, f"Exported {len(self.gif_converted)} PNGs ✓")
+                threading.Thread(target=go, daemon=True).start()
+                return
+            else:
+                rows = self.gif_converted[self.anim_idx]
+                mode = self.gif_mode
+        elif self.result:
+            mode, rows = self.result
+        else:
+            messagebox.showwarning("Nothing", "Convert something first."); return
+
+        path = filedialog.asksaveasfilename(defaultextension='.png',
+                                            filetypes=[('PNG', '*.png'), ('All', '*.*')])
+        if not path: return
+        try:
+            fnt = self._get_font(); cw, ch = self._measure(fnt)
+            rows_to_image(rows, mode, fnt, cw, ch).save(path)
+            self.v_status.set("PNG exported ✓")
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+
+    def _get_font(self):
+        sz = max(8, self.v_fontsize.get())
+        for name in ("cour.ttf", "DejaVuSansMono.ttf", "LiberationMono-Regular.ttf"):
+            try: return ImageFont.truetype(name, sz)
+            except: pass
+        return ImageFont.load_default()
+
+    def _measure(self, fnt):
+        d = ImageDraw.Draw(Image.new('RGB', (80, 80)))
+        bb = d.textbbox((0,0), 'X', font=fnt)
+        return bb[2]-bb[0]+1, bb[3]-bb[1]+2
+
+    def reset(self):
+        self.stop_gif()
+        self.v_width.set(120);    self.v_bright.set(1.0)
+        self.v_contrast.set(1.1); self.v_sat.set(1.2)
+        self.v_invert.set(False); self.v_dither.set(False)
+        self.v_live.set(False);   self.v_charset.set("Standard")
+        self.v_edge.set("off");   self.v_fontsize.set(9)
+        self.v_custom.set("");    self.v_speed.set(100)
+        self._apply_fontsize()
+        self.v_status.set("Reset ✓")
+
+
+if __name__ == '__main__':
     root = tk.Tk()
     root.resizable(True, True)
-
-    # Try to set a nice icon
-    try:
-        root.iconbitmap(default='')
-    except Exception:
-        pass
-
-    app = ASCIIArtConverterPro(root)
+    App(root)
     root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
